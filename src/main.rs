@@ -1,14 +1,25 @@
 use anyhow::{bail, Context, Result};
+use sha2::{Sha256, Digest};
 use cryptoki::{
-    types::{
-        locking::CInitializeArgs,
-        object::Attribute,
-        object::{AttributeType, ObjectHandle},
-        session::Session,
-        slot_token::Slot,
-        Flags,
+    session::{
+        Session,
+        UserType
     },
-    Pkcs11,
+    context::{
+        CInitializeArgs,
+        Pkcs11,
+    },
+    mechanism::{
+        Mechanism,
+    },
+    object::{
+        Attribute,
+        AttributeType,
+        ObjectHandle,
+    },
+    slot::{
+        Slot,
+    },
 };
 use rand::rngs::OsRng;
 use rsa::{BigUint, PaddingScheme, PublicKey};
@@ -66,20 +77,12 @@ fn main() -> Result<()> {
         .with_context(|| format!("Failed to parse slot ('{}') as Slot", opt.slot))?;
 
     // Create and initialize the PKCS11 client object
-    let pkcs11client = Pkcs11::new(opt.module)?;
+    let mut pkcs11client = Pkcs11::new(opt.module)?;
     pkcs11client.initialize(CInitializeArgs::OsThreads)?;
 
-    // Set the User PIN before opening the session
-    pkcs11client.set_pin(slot, opt.pin.as_str())?;
-
-    // Set up the flags for opening a session, the serial session flag must _always_ be set, or it's
-    // an immediate protocol error
-    let mut flags = Flags::new();
-    flags.set_serial_session(true);
-
     // Open a session and login with as a User type
-    let session = pkcs11client.open_session_no_callback(slot, flags)?;
-    session.login(cryptoki::types::session::UserType::User)?;
+    let session = pkcs11client.open_ro_session(slot)?;
+    session.login(UserType::User, Some(&opt.pin.as_str()))?;
 
     // Find the objects corresponding to the provided key ID for encrypting and decrypting
     let enc_objects = session.find_objects(&[
@@ -94,6 +97,7 @@ fn main() -> Result<()> {
     if enc_objects.len() != 1 && dec_objects.len() != 1 {
         bail!("Can't uniquely determine encryption and decryption objects for key id: {}", opt.id);
     }
+    let private_key = dec_objects[0];
 
     // The NitrokeyHSM doesn't support encrypting using asymmetric RSA keys on the device, you're
     // meant to extract the public key attributes and use them locally to encrypt any data.
@@ -105,20 +109,27 @@ fn main() -> Result<()> {
     let pubkey = rsa::RSAPublicKey::new(modulus, pubexp)?;
 
     // Encrypt using the public key from the device, specifying PKCS1 1.5 padding
-    let secret = "This is my secret".as_bytes().to_vec();
-    let output = pubkey.encrypt(&mut rng, PaddingScheme::new_pkcs1v15_encrypt(), &secret)?;
-    assert_ne!(output, secret);
+    let message = "This is my secret".as_bytes().to_vec();
+    let output = pubkey.encrypt(&mut rng, PaddingScheme::new_pkcs1v15_encrypt(), &message)?;
+    assert_ne!(output, message);
 
     // Now extract the plaintext bytes, decrypting via the User PIN authenticated Session to the
     // Nitrokey HSM
     let plaintext = session.decrypt(
-        &cryptoki::types::mechanism::Mechanism::RsaPkcs,
+        &Mechanism::RsaPkcs,
         dec_objects[0],
         &output,
     )?;
 
+    let signature = session.sign(&Mechanism::Sha256RsaPkcs, private_key, &message).unwrap();
+    let mut hasher = Sha256::new();
+    hasher.update(&message);
+    let hash = hasher.finalize();
+    pubkey.verify(PaddingScheme::PKCS1v15Sign { hash: Some(rsa::Hash::SHA2_256)}, &hash, &signature)?;
+    println!("signature valid");
+
     // Basic final checks
-    assert_eq!(secret, plaintext);
+    assert_eq!(message, plaintext);
 
     // Proof for the human
     let plaintext_str = String::from_utf8(plaintext)?;
