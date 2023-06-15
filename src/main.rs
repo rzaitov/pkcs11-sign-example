@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use rand::Rng;
 use sha2::{Sha256, Digest};
 use cryptoki::{
     session::{
@@ -108,11 +109,10 @@ fn main() -> Result<()> {
 
     // Use the RustCrypto RSA crate to establish the public key locally
     let pubkey = rsa::RSAPublicKey::new(modulus, pubexp)?;
-
-    // Encrypt using the public key from the device, specifying PKCS1 1.5 padding
-    let message = "This is my secret".as_bytes().to_vec();
+    let mut message = [0u8; 256];
 
     loop {
+        rand::thread_rng().fill(&mut message);
         let signature = session.sign(&Mechanism::Sha256RsaPkcs, private_key, &message).unwrap();
         let mut hasher = Sha256::new();
         hasher.update(&message);
