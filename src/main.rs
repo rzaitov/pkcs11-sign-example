@@ -10,17 +10,13 @@ use cryptoki::{
         CInitializeArgs,
         Pkcs11,
     },
-    mechanism::{
-        Mechanism,
-    },
+    mechanism::Mechanism,
     object::{
         Attribute,
         AttributeType,
-        ObjectHandle,
+        ObjectHandle, ObjectClass,
     },
-    slot::{
-        Slot,
-    },
+    slot::Slot,
 };
 use rsa::{BigUint, PaddingScheme, PublicKey};
 use std::{
@@ -87,25 +83,26 @@ fn main() -> Result<()> {
     let session = pkcs11client.open_ro_session(slot)?;
     session.login(UserType::User, Some(&opt.pin.as_str()))?;
 
-    // Find the objects corresponding to the provided key ID for encrypting and decrypting
-    let enc_objects = session.find_objects(&[
-        Attribute::Encrypt(true.into()),
+    // Find the objects corresponding to the provided key ID for signing and signature verification
+    let verify_objects = session.find_objects(&[
+        Attribute::Verify(true.into()),
         Attribute::Id(keyid.clone()),
     ])?;
-    let dec_objects = session.find_objects(&[
-        Attribute::Decrypt(true.into()),
+    let sign_objects = session.find_objects(&[
+        Attribute::Sign(true.into()),
+        Attribute::Local(true.into()),
         Attribute::Id(keyid.clone()),
     ])?;
 
-    if enc_objects.len() != 1 && dec_objects.len() != 1 {
+    if verify_objects.len() != 1 && sign_objects.len() != 1 {
         bail!("Can't uniquely determine encryption and decryption objects for key id: {}", opt.id);
     }
-    let private_key = dec_objects[0];
+    let private_key = sign_objects[0];
 
     // The NitrokeyHSM doesn't support encrypting using asymmetric RSA keys on the device, you're
     // meant to extract the public key attributes and use them locally to encrypt any data.
-    let modulus = extract_modulus(&session, enc_objects[0])?;
-    let pubexp = extract_public_exponent(&session, enc_objects[0])?;
+    let modulus = extract_modulus(&session, verify_objects[0])?;
+    let pubexp = extract_public_exponent(&session, verify_objects[0])?;
 
     // Use the RustCrypto RSA crate to establish the public key locally
     let pubkey = rsa::RSAPublicKey::new(modulus, pubexp)?;
