@@ -10,7 +10,9 @@ edition = "2018"
 cryptoki = "0.4"
 structopt = "0.3"
 anyhow = "1"
-rsa = "0.4"
+rsa =  { verify = "0.9", features = ["sha2"] }
 rand = "0.8"
 hex = "0.4"
-sha2 = "0.10"
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+chrono = "0.4"

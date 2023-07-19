@@ -1,6 +1,5 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Context, Result, Ok};
 use rand::Rng;
-use sha2::{Sha256, Digest};
 use cryptoki::{
     session::{
         Session,
@@ -14,17 +13,26 @@ use cryptoki::{
     object::{
         Attribute,
         AttributeType,
-        ObjectHandle, ObjectClass,
+        ObjectHandle,
     },
     slot::Slot,
 };
-use rsa::{BigUint, PaddingScheme, PublicKey};
+use rsa::{
+    BigUint,
+    RsaPublicKey,
+    pkcs8::DecodePublicKey,
+    pkcs1v15::Pkcs1v15Sign,
+    sha2::{Sha256, Digest}
+};
 use std::{
+    fs,
     convert::TryFrom,
     path::PathBuf,
     thread,
 };
 use structopt::StructOpt;
+use serde::{Deserialize, Serialize};
+use chrono::NaiveDate;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "cryptoki-example", about = "An example cryptoki CLI")]
@@ -44,7 +52,20 @@ struct CliOpt {
     /// Key ID
     #[structopt(long)]
     id: String,
+
+    #[structopt(long, parse(from_os_str))]
+    license: PathBuf,
 }
+
+#[derive(Serialize, Deserialize)]
+struct License {
+    schema: String,
+    start_date: String,
+    end_date: String,
+    description: String,
+    tokens: Vec<String>
+}
+
 
 fn extract_modulus(session: &Session, object: ObjectHandle) -> Result<BigUint> {
     let attributes = session.get_attributes(object, &[AttributeType::Modulus])?;
@@ -68,6 +89,25 @@ fn extract_public_exponent(session: &Session, object: ObjectHandle) -> Result<Bi
 
 fn main() -> Result<()> {
     let opt = CliOpt::from_args();
+
+    let content = fs::read_to_string(&opt.license).unwrap();
+    let license: License = serde_json::from_str(&content).unwrap();
+    println!("schema: {}", license.schema);
+    println!("start-date: {}", license.start_date);
+    println!("end-date: {}", license.end_date);
+    println!("description: {}", license.description);
+    for pub_key_str in license.tokens {
+        println!("token:\n{}", pub_key_str);
+        // let pub_key = RsaPublicKey::from_public_key_pem(&pub_key_str).unwrap();
+        // println!("{:?}", pub_key);
+    }
+
+    let date_fmt = "%Y-%m-%d";
+    let start_date = NaiveDate::parse_from_str(&license.start_date, date_fmt).unwrap();
+    let end_date = NaiveDate::parse_from_str(&license.end_date, date_fmt).unwrap();
+
+    let ord = end_date.cmp(&start_date);
+    assert!(ord.is_gt());
 
     // Extra parsing out of command line arguments
     let keyid = hex::decode(&opt.id)
@@ -105,7 +145,7 @@ fn main() -> Result<()> {
     let pubexp = extract_public_exponent(&session, verify_objects[0])?;
 
     // Use the RustCrypto RSA crate to establish the public key locally
-    let pubkey = rsa::RSAPublicKey::new(modulus, pubexp)?;
+    let pubkey = RsaPublicKey::new(modulus, pubexp)?;
     let mut message = [0u8; 256];
 
     loop {
@@ -114,7 +154,7 @@ fn main() -> Result<()> {
         let mut hasher = Sha256::new();
         hasher.update(&message);
         let hash = hasher.finalize();
-        pubkey.verify(PaddingScheme::PKCS1v15Sign { hash: Some(rsa::Hash::SHA2_256)}, &hash, &signature)?;
+        pubkey.verify(Pkcs1v15Sign::new::<Sha256>(), &hash, &signature)?;
         println!("signature valid");
 
         thread::sleep(std::time::Duration::from_secs(10));
