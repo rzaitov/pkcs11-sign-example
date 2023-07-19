@@ -87,6 +87,14 @@ fn extract_public_exponent(session: &Session, object: ObjectHandle) -> Result<Bi
     }
 }
 
+fn parse_token_keys(tokens: Vec<String>) -> Vec<RsaPublicKey> {
+    let mut keys: Vec<RsaPublicKey> = vec![];
+    for pub_key_str in tokens {
+        keys.push(RsaPublicKey::from_public_key_pem(&pub_key_str).unwrap());
+    }
+    return keys;
+}
+
 fn main() -> Result<()> {
     let opt = CliOpt::from_args();
 
@@ -96,11 +104,7 @@ fn main() -> Result<()> {
     println!("start-date: {}", license.start_date);
     println!("end-date: {}", license.end_date);
     println!("description: {}", license.description);
-    for pub_key_str in license.tokens {
-        println!("token:\n{}", pub_key_str);
-        // let pub_key = RsaPublicKey::from_public_key_pem(&pub_key_str).unwrap();
-        // println!("{:?}", pub_key);
-    }
+    let known_pub_keys = parse_token_keys(license.tokens);
 
     let date_fmt = "%Y-%m-%d";
     let start_date = NaiveDate::parse_from_str(&license.start_date, date_fmt).unwrap();
@@ -146,8 +150,11 @@ fn main() -> Result<()> {
 
     // Use the RustCrypto RSA crate to establish the public key locally
     let pubkey = RsaPublicKey::new(modulus, pubexp)?;
-    let mut message = [0u8; 256];
+    let allowed = known_pub_keys.iter().any(|key| key.eq(&pubkey));
+    println!("token is allowed: {}", allowed);
+    return Ok(());
 
+    let mut message = [0u8; 256];
     loop {
         rand::thread_rng().fill(&mut message);
         let signature = session.sign(&Mechanism::Sha256RsaPkcs, private_key, &message).unwrap();
