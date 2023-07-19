@@ -25,7 +25,7 @@ use rsa::{
     sha2::{Sha256, Digest}
 };
 use std::{
-    fs,
+    fs, str,
     convert::TryFrom,
     path::PathBuf,
     thread,
@@ -55,6 +55,12 @@ struct CliOpt {
 
     #[structopt(long, parse(from_os_str))]
     license: PathBuf,
+
+    #[structopt(long, parse(from_os_str))]
+    signature: PathBuf,
+
+    #[structopt(long, parse(from_os_str))]
+    verify: PathBuf
 }
 
 #[derive(Serialize, Deserialize)]
@@ -65,7 +71,6 @@ struct License {
     description: String,
     tokens: Vec<String>
 }
-
 
 fn extract_modulus(session: &Session, object: ObjectHandle) -> Result<BigUint> {
     let attributes = session.get_attributes(object, &[AttributeType::Modulus])?;
@@ -95,11 +100,24 @@ fn parse_token_keys(tokens: Vec<String>) -> Vec<RsaPublicKey> {
     return keys;
 }
 
+fn verify(key: &RsaPublicKey, data: &[u8], signature: &[u8]) -> Result<(), rsa::Error> {
+    let mut hasher = Sha256::new();
+    hasher.update(&data);
+    let hash = hasher.finalize();
+    return key.verify(Pkcs1v15Sign::new::<Sha256>(), &hash, &signature);
+}
+
 fn main() -> Result<()> {
     let opt = CliOpt::from_args();
 
-    let content = fs::read_to_string(&opt.license).unwrap();
-    let license: License = serde_json::from_str(&content).unwrap();
+    let license_data = fs::read(&opt.license).unwrap();
+    let signature = fs::read(&opt.signature).unwrap();
+    let verify_key_str = fs::read_to_string(&opt.verify).unwrap();
+    let verify_key = RsaPublicKey::from_public_key_pem(&verify_key_str).unwrap();
+    verify(&verify_key, &license_data, &signature)?;
+
+    let license_text = str::from_utf8(&license_data)?;
+    let license: License = serde_json::from_str(&license_text).unwrap();
     println!("schema: {}", license.schema);
     println!("start-date: {}", license.start_date);
     println!("end-date: {}", license.end_date);
@@ -152,16 +170,15 @@ fn main() -> Result<()> {
     let pubkey = RsaPublicKey::new(modulus, pubexp)?;
     let allowed = known_pub_keys.iter().any(|key| key.eq(&pubkey));
     println!("token is allowed: {}", allowed);
-    return Ok(());
+    if !allowed {
+        bail!("This token is not present in the license file");
+    }
 
     let mut message = [0u8; 256];
     loop {
         rand::thread_rng().fill(&mut message);
         let signature = session.sign(&Mechanism::Sha256RsaPkcs, private_key, &message).unwrap();
-        let mut hasher = Sha256::new();
-        hasher.update(&message);
-        let hash = hasher.finalize();
-        pubkey.verify(Pkcs1v15Sign::new::<Sha256>(), &hash, &signature)?;
+        verify(&pubkey, &message, &signature)?;
         println!("signature valid");
 
         thread::sleep(std::time::Duration::from_secs(10));
